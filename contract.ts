@@ -226,3 +226,22 @@ export const kanbanCompleteSubtask = defineRpc({
   input: z.object({ ticketId: z.string() }),
   output: MutationOutput,
 });
+
+// Память сервера плагина: какой проект пользователь смотрел последним.
+// Поверхности плагина перемонтируются (переход по сайдбару, смена вкладки),
+// а хранилища состояния у клиента 0.6.1 нет — держим выбор на сервере.
+export const kanbanStateGet = defineRpc({
+  name: "kanban.state.get",
+  input: z.object({}),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    projectId: z.string().nullable(),
+  }),
+});
+
+export const kanbanStateSet = defineRpc({
+  name: "kanban.state.set",
+  input: z.object({ projectId: z.string().nullable() }),
+  output: MutationOutput,
+});

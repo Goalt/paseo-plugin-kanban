@@ -8,6 +8,8 @@ import {
   kanbanMoveTicket,
   kanbanProjects,
   kanbanSnapshot,
+  kanbanStateGet,
+  kanbanStateSet,
   kanbanTicket,
   kanbanUpdateTicket,
   kanbanVersion,
@@ -26,6 +28,7 @@ import {
   updateTicket,
 } from "./kanban-api.server";
 import { currentVersion, ensureLive, isConnected, stopLive } from "./kanban-live.server";
+import { getSelectedProject, setSelectedProject } from "./plugin-state.server";
 
 // Точка входа. Компилируется дважды: в server-бандле остаются plugin.handle(...),
 // в client-бандле они вырезаются вместе с импортами `*.server` — поэтому серверный
@@ -131,6 +134,15 @@ export default function contribute(plugin: PluginContext) {
     return completeSubtask(ticketId).then((error) =>
       error === null ? { ok: true, error: null } : { ok: false, error },
     );
+  });
+
+  plugin.handle(kanbanStateGet, () => {
+    return { ok: true, error: null, projectId: getSelectedProject() };
+  });
+
+  plugin.handle(kanbanStateSet, ({ projectId }) => {
+    setSelectedProject(projectId);
+    return { ok: true, error: null };
   });
 
   plugin.addSurface("main", KanbanBoard);

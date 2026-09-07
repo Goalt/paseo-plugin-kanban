@@ -42,12 +42,20 @@ const updateCalls = [];
 const subtaskCalls = [];
 const completeCalls = [];
 const deleteCalls = [];
+// «Память сервера плагина» для теста перемонтирования.
+let storedProjectId = process.env.STORED_PROJECT ?? null;
+const snapshotCalls = [];
 const rpcImpl = {
-  'kanban.snapshot': () => Promise.resolve(process.env.MODE === 'error'
+  'kanban.snapshot': ({ projectId }) => (snapshotCalls.push(projectId ?? null), Promise.resolve(process.env.MODE === 'error'
     ? { ok: false, error: 'kanban API недоступен по http://mcp-hub:3010 — fetch failed', snapshot: null }
-    : { ok: true, error: null, snapshot: structuredClone(snapshotFixture) }),
+    : { ok: true, error: null, snapshot: structuredClone(snapshotFixture) })),
   'kanban.version': () => Promise.resolve({ ok: true, error: null, version: versionCounter, connected: true }),
   'kanban.projects': () => Promise.resolve({ ok: true, error: null, projects: snapshotFixture.projects }),
+  'kanban.state.get': () => Promise.resolve({ ok: true, error: null, projectId: storedProjectId }),
+  'kanban.state.set': ({ projectId }) => {
+    storedProjectId = projectId;
+    return Promise.resolve({ ok: true, error: null });
+  },
   'kanban.ticket': ({ ticketId }) => {
     const card = snapshotFixture.tickets.find((t) => t.id === ticketId);
     if (!card) return Promise.resolve({ ok: false, error: 'тикет не найден', ticket: null });
@@ -68,7 +76,13 @@ const rpcImpl = {
         subtask_total: subtasks.length,
         subtask_completed: subtasks.filter((t) => t.done).length,
         attachments: [{ id: 'a1', file_path: '/tmp/shots/demo.mp4', file_type: 'video' }],
-        dependencies: [],
+        dependencies: card.ticket_number === 1
+          ? [
+              { id: 'd1', type: 'blocked_by', direction: 'outgoing', ticket_id: 't2', ticket_number: 2, title: '[S1] UI доски read-only' },
+              { id: 'd2', type: 'related_to', direction: 'incoming', ticket_id: 't30', ticket_number: 30, title: 'Зависимости в модалке' },
+              { id: 'd3', type: 'blocks', direction: 'outgoing', ticket_id: 'tX', ticket_number: null, title: null },
+            ]
+          : [],
       },
     });
   },
@@ -182,14 +196,57 @@ contribute({
 });
 console.log('сайдбар:', JSON.stringify(sidebar));
 
-const theme = { colors: { surface0: '#18181b', foreground: '#fafafa', foregroundMuted: '#a1a1aa', accent: '#e4e4e7', accentForeground: '#18181b', statusDanger: '#c44a4a' } };
-const props = { theme, host: { id: 'test', label: 'test' }, layout: { compact: false, platform: 'web' } };
+// Палитры взяты из toPluginTheme демона (тёмная zinc и светлая по умолчанию).
+const THEMES = {
+  dark: { surface0: '#18181b', foreground: '#fafafa', foregroundMuted: '#a1a1aa', accent: '#e4e4e7', accentForeground: '#18181b', statusDanger: '#c44a4a' },
+  light: { surface0: '#ffffff', foreground: '#1a1a1e', foregroundMuted: '#71717a', accent: '#20744A', accentForeground: '#ffffff', statusDanger: '#9d433b' },
+};
+const themeName = process.env.THEME ?? 'dark';
+const compact = process.env.COMPACT === '1';
+const theme = { colors: THEMES[themeName] ?? THEMES.dark };
+const props = { theme, host: { id: 'test', label: 'test' }, layout: { compact, platform: 'web' } };
 
-const root = ReactDOMClient.createRoot(document.getElementById('root'));
+let root = ReactDOMClient.createRoot(document.getElementById('root'));
 await act(async () => { root.render(React.createElement(Surface, props)); });
 await act(async () => { await new Promise(r => setTimeout(r, 50)); });
 const text = () => document.getElementById('root').textContent;
+if (process.env.DUMP) {
+  // Открываем модалку, если просили: на скриншоте нужно и её оформление.
+  if (process.env.DUMP_MODAL === '1') {
+    const anyCard = document.querySelector('[aria-label^="Открыть тикет #"]');
+    await act(async () => { anyCard.click(); });
+    // Modal у RN-web появляется через fade-анимацию: снимать дамп раньше её
+    // окончания бессмысленно — в HTML уедет полупрозрачное промежуточное состояние.
+    await act(async () => { await new Promise(r => setTimeout(r, 900)); });
+  }
+  const { writeFileSync } = await import('node:fs');
+  // react-native-web добавляет правила через CSSOM (insertRule), а такие правила
+  // в outerHTML не сериализуются — вытаскиваем их из document.styleSheets вручную,
+  // иначе в дампе не будет ни раскладки, ни цветов.
+  const css = [...document.styleSheets]
+    .map((sheet) => {
+      try {
+        return [...sheet.cssRules].map((rule) => rule.cssText).join('\n');
+      } catch {
+        return '';
+      }
+    })
+    .join('\n');
+  const bodyBackground = theme.colors.surface0;
+  writeFileSync(
+    process.env.DUMP,
+    `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:${bodyBackground};}#root{height:100%;display:flex;flex-direction:column;}
+/* fade-анимация Modal при открытии дампа в Chrome стартует заново и попадает
+   в кадр полупрозрачной — для статичного снимка её глушим. */
+*{animation:none !important;opacity:inherit;}\n${css}</style></head><body>${document.body.innerHTML}</body></html>`,
+    'utf8',
+  );
+  console.log('HTML дамп записан:', process.env.DUMP, '| тема:', themeName, '| compact:', compact);
+  process.exit(0);
+}
+
 console.log('--- после загрузки ---');
+console.log('счётчик в работе:', document.querySelector('[aria-label^="В работе"]')?.textContent ?? '(нет)');
 console.log(text().slice(0, 600));
 
 // Создание тикета из колонки: «+» → форма → Create.
@@ -250,6 +307,24 @@ if (process.env.MODE !== 'error' && snapshotFixture.tickets.length > 0) {
   console.log((dialog?.textContent ?? '(модалки нет)').slice(0, 400));
   const chips = [...document.querySelectorAll('[aria-label^="Переместить в "]')].map((n) => n.textContent);
   console.log('чипы колонок в модалке:', chips.join(' / '));
+
+  // Зависимости: подписи, цвет блокировки и переход по связи.
+  console.log('--- зависимости в модалке ---');
+  const depRows = [...document.querySelectorAll('[aria-label^="Открыть зависимость"]')];
+  const depDialog = document.querySelector('[aria-label="Закрыть окно тикета"]')?.parentElement;
+  const depSection = depDialog?.textContent.match(/Зависимости(.*?)Вложения/s)?.[1] ?? '(секции нет)';
+  console.log('строки связей:', depSection.replace(/\s+/g, ' ').trim());
+  console.log('кликабельных связей:', depRows.length, '(третья — из другого проекта, без перехода)');
+  await act(async () => { depRows[0].click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 80)); });
+  const header = document.querySelector('[aria-label="Закрыть окно тикета"]')?.parentElement?.textContent ?? '';
+  console.log('после тапа открылся тикет:', header.slice(0, 60));
+  // возвращаемся к исходному тикету
+  await act(async () => { document.querySelector('[aria-label="Закрыть"]').click(); });
+  await act(async () => {
+    document.querySelector(`[aria-label="Открыть тикет #${first.ticket_number}"]`).click();
+  });
+  await act(async () => { await new Promise(r => setTimeout(r, 80)); });
 
   // Сабтаски: добавить и завершить.
   console.log('--- сабтаски в модалке ---');
@@ -314,6 +389,42 @@ if (process.env.MODE !== 'error' && snapshotFixture.tickets.length > 0) {
   await act(async () => { await new Promise(r => setTimeout(r, 120)); });
   console.log('delete вызван:', deleteCalls.length, '| модалка закрылась:', document.querySelector('[aria-label="Закрыть окно тикета"]') === null);
   console.log('карточка исчезла с доски:', !text().includes('заголовок из модалки'));
+}
+
+// Перемонтирование поверхности: выбор проекта живёт на сервере плагина.
+if (process.env.MODE !== 'error') {
+  console.log('--- перемонтирование поверхности ---');
+  await act(async () => { document.querySelector('[aria-label="Выбрать проект"]').click(); });
+  await act(async () => { document.querySelector('[aria-label="Открыть проект freqtrade"]').click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 60)); });
+  console.log('в память сервера записан проект:', storedProjectId);
+  await act(async () => { root.unmount(); });
+  const root2 = ReactDOMClient.createRoot(document.getElementById('root'));
+  await act(async () => { root2.render(React.createElement(Surface, props)); });
+  await act(async () => { await new Promise(r => setTimeout(r, 80)); });
+  console.log('после перемонтирования запрошен projectId:', snapshotCalls[snapshotCalls.length - 1]);
+  root = root2;
+}
+
+// Фильтр по сессии.
+if (process.env.MODE !== 'error') {
+  console.log('--- фильтр по сессии ---');
+  await act(async () => { document.querySelector('[aria-label="Фильтр по сессии"]').click(); });
+  const options = [...document.querySelectorAll('[aria-label^="Фильтр по сессии "], [aria-label="Показать все сессии"]')].map((n) => n.textContent);
+  console.log('пункты фильтра:', options.join(' / '));
+  await act(async () => { document.querySelector('[aria-label="Фильтр по сессии main"]').click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+  const filtered = text();
+  console.log('подзаголовок:', filtered.match(/\d+ из \d+ тикетов[^·]*/)?.[0]?.trim());
+  const visible = () => [...document.querySelectorAll('[aria-label^="Открыть тикет #"]')].map((n) => n.getAttribute('aria-label').replace('Открыть тикет ', ''));
+  const withSession = snapshotFixture.tickets.filter((t) => t.session_id === 's1').map((t) => '#' + t.ticket_number);
+  console.log('видны карточки:', visible().join(' '), '| ожидались (сессия main):', withSession.join(' '));
+  console.log('совпало:', JSON.stringify(visible().sort()) === JSON.stringify(withSession.sort()));
+  console.log('пустая колонка под фильтром:', (filtered.match(/Пусто/g) ?? []).length, 'шт.');
+  await act(async () => { document.querySelector('[aria-label="Фильтр по сессии"]').click(); });
+  await act(async () => { document.querySelector('[aria-label="Показать все сессии"]').click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+  console.log('после снятия фильтра тикеты вернулись:', text().includes('#2'));
 }
 
 // Выпадашка проектов: жмём на имя проекта и смотрим, что список раскрылся.

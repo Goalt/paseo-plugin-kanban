@@ -5,6 +5,8 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   kanbanMoveTicket,
   kanbanSnapshot,
+  kanbanStateGet,
+  kanbanStateSet,
   kanbanVersion,
   type Column,
   type Project,
@@ -41,6 +43,8 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
   const fetchSnapshot = useRpc(kanbanSnapshot);
   const fetchVersion = useRpc(kanbanVersion);
   const sendMove = useRpc(kanbanMoveTicket);
+  const fetchState = useRpc(kanbanStateGet);
+  const saveState = useRpc(kanbanStateSet);
   const mutation = useMutationRunner();
 
   const [board, setBoard] = useState<Snapshot | null>(null);
@@ -50,6 +54,9 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
   const [live, setLive] = useState(true);
   const [openTicketId, setOpenTicketId] = useState<string | null>(null);
   const [createInColumn, setCreateInColumn] = useState<Column | null>(null);
+  // Фильтр по сессии агента: null — показывать все тикеты.
+  const [sessionFilter, setSessionFilter] = useState<string | null>(null);
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
 
   const aliveRef = useRef(true);
   // Какой проект хотим видеть: null — «первый по списку API» (дефолт до первого ответа).
@@ -133,6 +140,11 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
     (id: string) => {
       setPickerOpen(false);
       if (id === projectIdRef.current) return;
+      // Выбор живёт на сервере плагина: поверхность перемонтируется при каждом
+      // переходе по сайдбару, локальный state этого не переживает.
+      saveState({ projectId: id }).catch(() => {
+        // не смогли запомнить — доска всё равно откроет выбранный проект сейчас
+      });
       setBoard(null);
       setError(null);
       setLoading(true);
@@ -141,7 +153,7 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
       appliedVersionRef.current = -1;
       load(id, false);
     },
-    [load],
+    [load, saveState],
   );
 
   useEffect(() => {
@@ -149,8 +161,17 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
     // эффект не должен превратиться в цикл «рендер → запрос → рендер».
     if (startedRef.current) return;
     startedRef.current = true;
-    load(null, false);
-  }, [load]);
+    // Сначала спрашиваем сервер, какой проект смотрели последним; если памяти
+    // нет (первое открытие) — как раньше, первый проект из API.
+    fetchState({})
+      .then((result) => {
+        if (!aliveRef.current) return;
+        load(result.ok ? result.projectId : null, false);
+      })
+      .catch(() => {
+        if (aliveRef.current) load(null, false);
+      });
+  }, [load, fetchState]);
 
   // Живое обновление: раз в 2 с спрашиваем только номер версии (он лежит в памяти
   // сервера плагина и растёт от событий WS), снапшот перезабираем лишь при росте.
@@ -202,15 +223,38 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
     return map;
   }, [board]);
 
+  // Фильтр применяется на клиенте: снапшот и так приходит целиком, лишний
+  // круг к серверу ради выборки по session_id не нужен.
+  const visibleTickets = useMemo(() => {
+    const all = board?.tickets ?? [];
+    if (sessionFilter === null) return all;
+    return all.filter((ticket) => ticket.session_id === sessionFilter);
+  }, [board, sessionFilter]);
+
   const ticketsByColumn = useMemo(() => {
     const map: Record<string, TicketCard[]> = {};
     for (const column of board?.columns ?? []) map[column.id] = [];
-    for (const ticket of board?.tickets ?? []) {
+    for (const ticket of visibleTickets) {
       const list = map[ticket.column_id];
       if (list) list.push(ticket);
     }
     return map;
-  }, [board]);
+  }, [board, visibleTickets]);
+
+  // Счётчик «в работе». Бейджа у пунктов сайдбара/панелей в 0.6.1 нет
+  // (клиент оставляет у sidebar item только id/title/icon/surface), поэтому
+  // счётчик живёт в шапке доски — см. заметку #31 и README.
+  const inProgressCount = useMemo(() => {
+    const column = (board?.columns ?? []).find((item) => item.name === "In Progress");
+    if (column === undefined) return null;
+    return visibleTickets.filter((ticket) => ticket.column_id === column.id).length;
+  }, [board, visibleTickets]);
+
+  // Выбранной сессии может не оказаться в новом проекте — тогда фильтр снимаем.
+  const activeSession = sessionFilter === null ? null : sessionById[sessionFilter] ?? null;
+  useEffect(() => {
+    if (sessionFilter !== null && board !== null && activeSession === null) setSessionFilter(null);
+  }, [sessionFilter, board, activeSession]);
 
   return (
     <View style={styles.screen}>
@@ -230,18 +274,41 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
           <Text style={styles.subtitle}>
             {loading && board === null
               ? "Загрузка…"
-              : `${board?.tickets.length ?? 0} тикетов · ${board?.columns.length ?? 0} колонок · ` +
+              : `${visibleTickets.length}${
+                  sessionFilter === null ? "" : ` из ${board?.tickets.length ?? 0}`
+                } тикетов · ${board?.columns.length ?? 0} колонок · ` +
                 (live ? "live" : "нет связи с kanban")}
           </Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Обновить доску"
-          onPress={reload}
-          style={styles.primaryButton}
-        >
-          <Text style={styles.primaryButtonText}>Обновить</Text>
-        </Pressable>
+        <View style={styles.headerControls}>
+          {inProgressCount !== null ? (
+            <View style={styles.counterBadge} accessibilityLabel={`В работе: ${inProgressCount}`}>
+              <Text style={styles.counterText}>в работе {inProgressCount}</Text>
+            </View>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Фильтр по сессии"
+            onPress={() => setSessionPickerOpen((open) => !open)}
+            style={styles.sessionButton}
+          >
+            {activeSession !== null ? (
+              <View style={[styles.sessionDot, { backgroundColor: activeSession.color }]} />
+            ) : null}
+            <Text style={styles.secondaryButtonText} numberOfLines={1}>
+              {activeSession === null ? "Все сессии" : activeSession.name}
+            </Text>
+            <Text style={styles.caret}>{sessionPickerOpen ? "▲" : "▼"}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Обновить доску"
+            onPress={reload}
+            style={styles.primaryButton}
+          >
+            <Text style={styles.primaryButtonText}>Обновить</Text>
+          </Pressable>
+        </View>
       </View>
 
       {board === null ? (
@@ -278,6 +345,11 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
             <>
               {board.tickets.length === 0 ? (
                 <Text style={styles.hint}>Тикетов нет — агенты создадут их через MCP</Text>
+              ) : null}
+              {board.tickets.length > 0 && visibleTickets.length === 0 ? (
+                <Text style={styles.hint}>
+                  У сессии «{activeSession?.name ?? "?"}» тикетов нет — снимите фильтр
+                </Text>
               ) : null}
               <ScrollView horizontal contentContainerStyle={styles.boardRow}>
                 {board.columns.map((column, index) => (
@@ -323,6 +395,7 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
           styles={styles}
           onClose={() => setOpenTicketId(null)}
           onChanged={() => load(projectIdRef.current, true)}
+          onOpenTicket={setOpenTicketId}
         />
       ) : null}
 
@@ -334,6 +407,19 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
           currentId={board?.project?.id ?? null}
           onSelect={selectProject}
           onDismiss={() => setPickerOpen(false)}
+          styles={styles}
+        />
+      ) : null}
+
+      {sessionPickerOpen ? (
+        <SessionPicker
+          sessions={board?.sessions ?? []}
+          currentId={sessionFilter}
+          onSelect={(id) => {
+            setSessionFilter(id);
+            setSessionPickerOpen(false);
+          }}
+          onDismiss={() => setSessionPickerOpen(false)}
           styles={styles}
         />
       ) : null}
@@ -364,7 +450,7 @@ function ProjectPicker({
         onPress={onDismiss}
         style={styles.pickerBackdrop}
       />
-      <View style={styles.pickerMenu}>
+      <View style={[styles.pickerMenu, styles.pickerMenuLeft]}>
         <ScrollView contentContainerStyle={styles.pickerList}>
           {projects.length === 0 ? (
             <Text style={styles.pickerEmpty}>Проектов нет</Text>
@@ -381,6 +467,64 @@ function ProjectPicker({
               >
                 <Text style={active ? styles.pickerTextActive : styles.pickerText} numberOfLines={1}>
                   {project.name}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </View>
+  );
+}
+
+// Фильтр по сессии: та же выпадашка, что и у проектов, но прижата к правому краю.
+function SessionPicker({
+  sessions,
+  currentId,
+  onSelect,
+  onDismiss,
+  styles,
+}: {
+  sessions: Session[];
+  currentId: string | null;
+  onSelect: (id: string | null) => void;
+  onDismiss: () => void;
+  styles: Styles;
+}) {
+  return (
+    <View style={styles.pickerLayer}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Закрыть список сессий"
+        onPress={onDismiss}
+        style={styles.pickerBackdrop}
+      />
+      <View style={[styles.pickerMenu, styles.pickerMenuRight]}>
+        <ScrollView contentContainerStyle={styles.pickerList}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Показать все сессии"
+            onPress={() => onSelect(null)}
+            style={[styles.pickerItem, currentId === null ? styles.pickerItemActive : null]}
+          >
+            <Text style={currentId === null ? styles.pickerTextActive : styles.pickerText}>
+              Все сессии
+            </Text>
+          </Pressable>
+          {sessions.length === 0 ? <Text style={styles.pickerEmpty}>Сессий нет</Text> : null}
+          {sessions.map((session) => {
+            const active = session.id === currentId;
+            return (
+              <Pressable
+                key={session.id}
+                accessibilityRole="button"
+                accessibilityLabel={`Фильтр по сессии ${session.name}`}
+                onPress={() => onSelect(session.id)}
+                style={[styles.pickerItem, styles.pickerItemRow, active ? styles.pickerItemActive : null]}
+              >
+                <View style={[styles.sessionDot, { backgroundColor: session.color }]} />
+                <Text style={active ? styles.pickerTextActive : styles.pickerText} numberOfLines={1}>
+                  {session.name}
                 </Text>
               </Pressable>
             );

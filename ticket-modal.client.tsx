@@ -17,6 +17,7 @@ import {
   kanbanTicket,
   kanbanUpdateTicket,
   type Column,
+  type Dependency,
   type Priority,
   type Session,
   type TicketDetails,
@@ -37,6 +38,7 @@ export function TicketModal({
   styles,
   onClose,
   onChanged,
+  onOpenTicket,
 }: {
   ticketId: string;
   columns: Column[];
@@ -47,6 +49,8 @@ export function TicketModal({
   // Дёргается после любой успешной мутации: доска перезабирает снапшот сразу,
   // не дожидаясь тика поллинга версии.
   onChanged: () => void;
+  // Переход по зависимости: доска просто меняет открытый тикет.
+  onOpenTicket: (ticketId: string) => void;
 }) {
   const fetchTicket = useRpc(kanbanTicket);
   const sendMove = useRpc(kanbanMoveTicket);
@@ -94,6 +98,16 @@ export function TicketModal({
   useEffect(() => {
     loadTicket();
   }, [loadTicket]);
+
+  // Переход по зависимости меняет ticketId у того же компонента — сбрасываем
+  // всё, что относилось к прежнему тикету, иначе черновик или подтверждение
+  // удаления уедут на соседний тикет.
+  useEffect(() => {
+    setTicket(null);
+    setDraft(null);
+    setConfirmDelete(false);
+    setSubtaskTitle("");
+  }, [ticketId]);
 
   const startEditing = useCallback(() => {
     if (ticket === null) return;
@@ -418,6 +432,21 @@ export function TicketModal({
                 </View>
               </View>
 
+              {ticket.dependencies.length > 0 ? (
+                <View style={styles.modalSection}>
+                  <Text style={styles.modalSectionTitle}>Зависимости</Text>
+                  {ticket.dependencies.map((dependency) => (
+                    <DependencyRow
+                      key={dependency.id}
+                      dependency={dependency}
+                      colors={colors}
+                      styles={styles}
+                      onOpenTicket={onOpenTicket}
+                    />
+                  ))}
+                </View>
+              ) : null}
+
               {ticket.attachments.length > 0 ? (
                 <View style={styles.modalSection}>
                   <Text style={styles.modalSectionTitle}>Вложения</Text>
@@ -485,6 +514,65 @@ export function TicketModal({
         </View>
       </View>
     </NativeModal>
+  );
+}
+
+// Подпись зависимости с точки зрения открытого тикета. Роут отдаёт связи в обе
+// стороны, поэтому входящую blocked_by читаем как «этот блокирует другой».
+function dependencyLabel(dependency: Dependency): { text: string; blocking: boolean } {
+  const outgoing = dependency.direction === "outgoing";
+  if (dependency.type === "related_to") return { text: "связан с", blocking: false };
+  if (dependency.type === "blocked_by") {
+    return outgoing ? { text: "заблокирован", blocking: true } : { text: "блокирует", blocking: false };
+  }
+  return outgoing ? { text: "блокирует", blocking: false } : { text: "заблокирован", blocking: true };
+}
+
+function DependencyRow({
+  dependency,
+  colors,
+  styles,
+  onOpenTicket,
+}: {
+  dependency: Dependency;
+  colors: Colors;
+  styles: Styles;
+  onOpenTicket: (ticketId: string) => void;
+}) {
+  const label = dependencyLabel(dependency);
+  // Номер и заголовок резолвятся из тикетов того же проекта: их отсутствие и
+  // означает «связь ведёт в другой проект» — туда не прыгаем.
+  const known = dependency.ticket_number !== null;
+  const title = known
+    ? `#${dependency.ticket_number} ${dependency.title ?? ""}`.trim()
+    : "тикет другого проекта";
+  const content = (
+    <>
+      <Text
+        style={[
+          styles.depTag,
+          label.blocking
+            ? { color: colors.statusDanger, borderColor: colors.statusDanger }
+            : { color: colors.foregroundMuted, borderColor: colors.foregroundMuted },
+        ]}
+      >
+        {label.text}
+      </Text>
+      <Text style={known ? styles.subtaskText : styles.modalMuted} numberOfLines={1}>
+        {title}
+      </Text>
+    </>
+  );
+  if (!known) return <View style={styles.subtaskRow}>{content}</View>;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Открыть зависимость #${dependency.ticket_number}`}
+      onPress={() => onOpenTicket(dependency.ticket_id)}
+      style={styles.subtaskRow}
+    >
+      {content}
+    </Pressable>
   );
 }
 

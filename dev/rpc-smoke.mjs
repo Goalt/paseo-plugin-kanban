@@ -111,6 +111,22 @@ if (!mutating) {
     }
   }
 
+  console.log("\n[state] память выбранного проекта");
+  const before = await invoke("kanban.state.get", {});
+  const projectsForState = await invoke("kanban.projects", {});
+  const sandboxProject = projectsForState.projects.find((p) => p.name === "plugin-sandbox") ?? null;
+  if (sandboxProject !== null) {
+    await invoke("kanban.state.set", { projectId: sandboxProject.id });
+    const stored = await invoke("kanban.state.get", {});
+    expect(stored.projectId === sandboxProject.id, "kanban.state.get возвращает записанный проект");
+    const restored = await invoke("kanban.snapshot", { projectId: stored.projectId });
+    expect(
+      restored.snapshot?.project?.id === sandboxProject.id,
+      "снапшот по сохранённому id открывает тот же проект",
+    );
+    await invoke("kanban.state.set", { projectId: before.projectId });
+  }
+
   const first = await invoke("kanban.version", {});
   await wait(1200);
   const second = await invoke("kanban.version", {});
@@ -278,6 +294,34 @@ async function runMutations() {
       `· вложений ${details.ticket.attachments.length} · зависимостей ${details.ticket.dependencies.length}`,
     );
   }
+  console.log("\n[deps] зависимости в деталях");
+  const withDeps = start.tickets.find((card) => card.parent_ticket_id === null);
+  const depsResult = await invoke("kanban.ticket", { ticketId: withDeps.id });
+  const deps = depsResult.ticket?.dependencies ?? [];
+  console.log(
+    "  связей:",
+    deps.length,
+    deps
+      .map((dep) => `${dep.direction}/${dep.type} → #${dep.ticket_number ?? "?"} ${dep.title ?? ""}`)
+      .join(" | "),
+  );
+  expect(
+    deps.every((dep) => dep.ticket_number !== null && dep.title !== null),
+    "номера и заголовки связанных тикетов резолвятся",
+  );
+  // Та же строка связи со стороны второго тикета должна прийти с обратным
+  // направлением: роут отдаёт связи в обе стороны, направление считает плагин.
+  if (deps.length > 0) {
+    const mirror = deps[0].direction === "outgoing" ? "incoming" : "outgoing";
+    const otherSide = await invoke("kanban.ticket", { ticketId: deps[0].ticket_id });
+    expect(
+      (otherSide.ticket?.dependencies ?? []).some(
+        (dep) => dep.id === deps[0].id && dep.direction === mirror,
+      ),
+      `у связанного тикета та же связь приходит как ${mirror}`,
+    );
+  }
+
   const missing = await invoke("kanban.ticket", { ticketId: "00000000-0000-0000-0000-000000000000" });
   expect(!missing.ok && missing.error !== null, "несуществующий тикет → ok=false с текстом ошибки");
 }
