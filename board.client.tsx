@@ -3,21 +3,31 @@ import { useRpc } from "@getpaseo/plugin";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
+  kanbanMoveTicket,
   kanbanSnapshot,
   kanbanVersion,
   type Column,
-  type Priority,
   type Project,
   type Session,
   type Snapshot,
   type TicketCard,
 } from "./contract";
+import { useMutationRunner } from "./mutations.client";
+import { CreateTicketModal } from "./ticket-form.client";
+import { TicketModal } from "./ticket-modal.client";
+import { Toast } from "./toast.client";
+import {
+  createStyles,
+  describe,
+  PRIORITY_LABEL,
+  priorityStyle,
+  type Colors,
+  type Styles,
+} from "./ui.client";
 
 // ВАЖНО: компилятор демона 0.6.1 не понижает синтаксис ES2017 в клиентском бандле,
 // и Hermes на iOS/Android молча не грузит такой плагин. Поэтому здесь только
 // промис-цепочки (.then/.catch), никакого асинхронного сахара.
-
-type Colors = PluginSurfaceProps["theme"]["colors"];
 
 // Поллинг только номера версии: снапшот тянется лишь когда доска реально изменилась.
 const POLL_MS = 2000;
@@ -27,32 +37,19 @@ const FAIL_THRESHOLD = 3;
 // после восстановления API она ожила без нажатия Retry.
 const RETRY_TICKS = 5;
 
-const PRIORITY_LABEL: Record<Priority, string> = {
-  urgent: "urgent",
-  high: "high",
-  medium: "medium",
-  low: "low",
-};
-
-// Палитра плагинов 0.6.1 — ровно шесть цветов (surface0, foreground, foregroundMuted,
-// accent, accentForeground, statusDanger), отдельного «warning» в ней нет. Поэтому
-// приоритеты различаем не только цветом, но и заливкой: urgent — плашка, остальные — контур.
-function priorityStyle(priority: Priority, colors: Colors): { color: string; filled: boolean } {
-  if (priority === "urgent") return { color: colors.statusDanger, filled: true };
-  if (priority === "high") return { color: colors.statusDanger, filled: false };
-  if (priority === "medium") return { color: colors.accent, filled: false };
-  return { color: colors.foregroundMuted, filled: false };
-}
-
 export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
   const fetchSnapshot = useRpc(kanbanSnapshot);
   const fetchVersion = useRpc(kanbanVersion);
+  const sendMove = useRpc(kanbanMoveTicket);
+  const mutation = useMutationRunner();
 
   const [board, setBoard] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [live, setLive] = useState(true);
+  const [openTicketId, setOpenTicketId] = useState<string | null>(null);
+  const [createInColumn, setCreateInColumn] = useState<Column | null>(null);
 
   const aliveRef = useRef(true);
   // Какой проект хотим видеть: null — «первый по списку API» (дефолт до первого ответа).
@@ -122,6 +119,15 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
     failsRef.current = 0;
     load(projectIdRef.current, false);
   }, [load]);
+
+  // ◀ ▶ на карточке: соседняя колонка, после успеха — сразу снапшот.
+  const moveCard = useCallback(
+    (ticketId: string, columnId: string) => {
+      const refresh = () => load(projectIdRef.current, true);
+      mutation.run(() => sendMove({ ticketId, columnId }), refresh, refresh);
+    },
+    [mutation, sendMove, load],
+  );
 
   const selectProject = useCallback(
     (id: string) => {
@@ -274,7 +280,7 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
                 <Text style={styles.hint}>Тикетов нет — агенты создадут их через MCP</Text>
               ) : null}
               <ScrollView horizontal contentContainerStyle={styles.boardRow}>
-                {board.columns.map((column) => (
+                {board.columns.map((column, index) => (
                   <BoardColumn
                     key={column.id}
                     column={column}
@@ -283,6 +289,12 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
                     colors={theme.colors}
                     styles={styles}
                     width={columnWidth}
+                    onOpenTicket={setOpenTicketId}
+                    previousColumn={index > 0 ? board.columns[index - 1] : null}
+                    nextColumn={index + 1 < board.columns.length ? board.columns[index + 1] : null}
+                    onMove={moveCard}
+                    busy={mutation.busy}
+                    onCreateTicket={setCreateInColumn}
                   />
                 ))}
               </ScrollView>
@@ -290,6 +302,31 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
           )}
         </>
       )}
+
+      {createInColumn !== null && board?.project ? (
+        <CreateTicketModal
+          projectId={board.project.id}
+          column={createInColumn}
+          colors={theme.colors}
+          styles={styles}
+          onClose={() => setCreateInColumn(null)}
+          onCreated={() => load(projectIdRef.current, true)}
+        />
+      ) : null}
+
+      {openTicketId !== null ? (
+        <TicketModal
+          ticketId={openTicketId}
+          columns={board?.columns ?? []}
+          sessionById={sessionById}
+          colors={theme.colors}
+          styles={styles}
+          onClose={() => setOpenTicketId(null)}
+          onChanged={() => load(projectIdRef.current, true)}
+        />
+      ) : null}
+
+      <Toast message={mutation.error} onDismiss={mutation.clearError} styles={styles} />
 
       {pickerOpen ? (
         <ProjectPicker
@@ -354,8 +391,6 @@ function ProjectPicker({
   );
 }
 
-type Styles = ReturnType<typeof createStyles>;
-
 function BoardColumn({
   column,
   tickets,
@@ -363,6 +398,12 @@ function BoardColumn({
   colors,
   styles,
   width,
+  onOpenTicket,
+  previousColumn,
+  nextColumn,
+  onMove,
+  busy,
+  onCreateTicket,
 }: {
   column: Column;
   tickets: TicketCard[];
@@ -370,6 +411,12 @@ function BoardColumn({
   colors: Colors;
   styles: Styles;
   width: number;
+  onOpenTicket: (ticketId: string) => void;
+  previousColumn: Column | null;
+  nextColumn: Column | null;
+  onMove: (ticketId: string, columnId: string) => void;
+  busy: boolean;
+  onCreateTicket: (column: Column) => void;
 }) {
   return (
     <View style={[styles.column, { width }]}>
@@ -378,6 +425,14 @@ function BoardColumn({
           {column.name}
         </Text>
         <Text style={styles.columnCount}>{tickets.length}</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Создать тикет в ${column.name}`}
+          onPress={() => onCreateTicket(column)}
+          style={styles.columnAdd}
+        >
+          <Text style={styles.columnAddText}>+</Text>
+        </Pressable>
       </View>
       <ScrollView contentContainerStyle={styles.columnBody}>
         {tickets.length === 0 ? <Text style={styles.columnEmpty}>Пусто</Text> : null}
@@ -388,6 +443,11 @@ function BoardColumn({
             session={ticket.session_id === null ? null : sessionById[ticket.session_id] ?? null}
             colors={colors}
             styles={styles}
+            onOpen={onOpenTicket}
+            previousColumn={previousColumn}
+            nextColumn={nextColumn}
+            onMove={onMove}
+            busy={busy}
           />
         ))}
       </ScrollView>
@@ -400,17 +460,35 @@ function TicketView({
   session,
   colors,
   styles,
+  onOpen,
+  previousColumn,
+  nextColumn,
+  onMove,
+  busy,
 }: {
   ticket: TicketCard;
   session: Session | null;
   colors: Colors;
   styles: Styles;
+  onOpen: (ticketId: string) => void;
+  previousColumn: Column | null;
+  nextColumn: Column | null;
+  onMove: (ticketId: string, columnId: string) => void;
+  busy: boolean;
 }) {
   const priority = ticket.priority === null ? null : priorityStyle(ticket.priority, colors);
   const done = ticket.subtask_total > 0 && ticket.subtask_completed === ticket.subtask_total;
   return (
     <View style={styles.card}>
-      <View style={styles.cardTopRow}>
+      {/* Вложенные Pressable на вебе ловят один клик дважды, поэтому «открыть» и
+          «переместить» — соседние элементы, а не вложенные. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Открыть тикет #${ticket.ticket_number}`}
+        onPress={() => onOpen(ticket.id)}
+        style={styles.cardContent}
+      >
+        <View style={styles.cardTopRow}>
         <Text style={styles.cardNumber}>#{ticket.ticket_number}</Text>
         {ticket.parent_ticket_number !== null ? (
           <Text style={styles.cardParent}>↳ #{ticket.parent_ticket_number}</Text>
@@ -437,27 +515,49 @@ function TicketView({
         ) : null}
       </View>
 
-      <Text style={styles.cardTitle} numberOfLines={2}>
-        {ticket.title}
-      </Text>
+        <Text style={styles.cardTitle} numberOfLines={2}>
+          {ticket.title}
+        </Text>
+      </Pressable>
 
-      {session !== null || ticket.subtask_total > 0 ? (
-        <View style={styles.cardMetaRow}>
-          {session !== null ? (
-            <View style={styles.sessionTag}>
-              <View style={[styles.sessionDot, { backgroundColor: session.color }]} />
-              <Text style={styles.metaText} numberOfLines={1}>
-                {session.name}
-              </Text>
-            </View>
-          ) : null}
-          {ticket.subtask_total > 0 ? (
-            <Text style={[styles.metaText, done ? styles.metaDone : null]}>
-              {ticket.subtask_completed}/{ticket.subtask_total}
+      <View style={styles.cardMetaRow}>
+        {session !== null ? (
+          <View style={styles.sessionTag}>
+            <View style={[styles.sessionDot, { backgroundColor: session.color }]} />
+            <Text style={styles.metaText} numberOfLines={1}>
+              {session.name}
             </Text>
-          ) : null}
-        </View>
-      ) : null}
+          </View>
+        ) : null}
+        {ticket.subtask_total > 0 ? (
+          <Text style={[styles.metaText, done ? styles.metaDone : null]}>
+            {ticket.subtask_completed}/{ticket.subtask_total}
+          </Text>
+        ) : null}
+        <View style={styles.spacer} />
+        {previousColumn !== null ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Переместить #${ticket.ticket_number} в ${previousColumn.name}`}
+            disabled={busy}
+            onPress={() => onMove(ticket.id, previousColumn.id)}
+            style={[styles.moveButton, busy ? styles.disabledButton : null]}
+          >
+            <Text style={styles.moveButtonText}>◀</Text>
+          </Pressable>
+        ) : null}
+        {nextColumn !== null ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Переместить #${ticket.ticket_number} в ${nextColumn.name}`}
+            disabled={busy}
+            onPress={() => onMove(ticket.id, nextColumn.id)}
+            style={[styles.moveButton, busy ? styles.disabledButton : null]}
+          >
+            <Text style={styles.moveButtonText}>▶</Text>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -485,183 +585,4 @@ function ErrorState({
       </Pressable>
     </View>
   );
-}
-
-function describe(cause: unknown): string {
-  return cause instanceof Error ? cause.message || cause.name : String(cause);
-}
-
-function createStyles(colors: Colors, compact: boolean) {
-  return {
-    screen: {
-      flex: 1,
-      padding: compact ? 12 : 16,
-      gap: compact ? 8 : 12,
-      backgroundColor: colors.surface0,
-    },
-    headerRow: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      justifyContent: "space-between" as const,
-      flexWrap: "wrap" as const,
-      gap: 8,
-    },
-    headerLeft: { flexShrink: 1, gap: 2 },
-    title: {
-      color: colors.foreground,
-      fontSize: compact ? 17 : 20,
-      fontWeight: "700" as const,
-    },
-    subtitle: { color: colors.foregroundMuted, fontSize: 12 },
-    projectButton: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      gap: 6,
-    },
-    caret: { color: colors.foregroundMuted, fontSize: 10 },
-    pickerLayer: {
-      position: "absolute" as const,
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-    },
-    pickerBackdrop: { flex: 1 },
-    pickerMenu: {
-      position: "absolute" as const,
-      top: compact ? 44 : 52,
-      left: compact ? 12 : 16,
-      minWidth: 200,
-      maxWidth: 320,
-      maxHeight: 280,
-      borderWidth: 1,
-      borderColor: colors.foregroundMuted,
-      borderRadius: 10,
-      backgroundColor: colors.surface0,
-      overflow: "hidden" as const,
-    },
-    pickerList: { paddingVertical: 4 },
-    pickerItem: { paddingVertical: 8, paddingHorizontal: 12 },
-    pickerItemActive: { backgroundColor: colors.accent },
-    pickerText: { color: colors.foreground, fontSize: 13 },
-    pickerTextActive: { color: colors.accentForeground, fontSize: 13, fontWeight: "600" as const },
-    pickerEmpty: { color: colors.foregroundMuted, fontSize: 13, padding: 12 },
-    primaryButton: {
-      paddingVertical: 6,
-      paddingHorizontal: 12,
-      borderRadius: 8,
-      backgroundColor: colors.accent,
-    },
-    primaryButtonText: { color: colors.accentForeground, fontSize: 13 },
-    secondaryButton: {
-      paddingVertical: 5,
-      paddingHorizontal: 10,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: colors.foregroundMuted,
-    },
-    secondaryButtonText: { color: colors.foreground, fontSize: 12 },
-    errorText: { color: colors.statusDanger, fontSize: 13, flexShrink: 1 },
-    banner: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      justifyContent: "space-between" as const,
-      gap: 8,
-      flexWrap: "wrap" as const,
-    },
-    centered: {
-      flex: 1,
-      alignItems: "center" as const,
-      justifyContent: "center" as const,
-      gap: 10,
-      padding: 16,
-    },
-    placeholder: { color: colors.foregroundMuted, fontSize: 14 },
-    hint: { color: colors.foregroundMuted, fontSize: 13 },
-    errorTitle: {
-      color: colors.foreground,
-      fontSize: 16,
-      fontWeight: "600" as const,
-    },
-    errorBody: {
-      color: colors.statusDanger,
-      fontSize: 13,
-      textAlign: "center" as const,
-      maxWidth: 520,
-    },
-    columnEmpty: {
-      color: colors.foregroundMuted,
-      fontSize: 12,
-      textAlign: "center" as const,
-      paddingVertical: 12,
-    },
-    boardRow: {
-      flexDirection: "row" as const,
-      alignItems: "stretch" as const,
-      gap: compact ? 8 : 12,
-      paddingBottom: 4,
-    },
-    column: {
-      flexGrow: 0,
-      flexShrink: 0,
-      borderWidth: 1,
-      borderColor: colors.foregroundMuted,
-      borderRadius: 10,
-      padding: 8,
-      gap: 8,
-    },
-    columnHeader: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      justifyContent: "space-between" as const,
-      gap: 8,
-      paddingHorizontal: 2,
-    },
-    columnTitle: {
-      color: colors.foreground,
-      fontSize: 14,
-      fontWeight: "600" as const,
-      flexShrink: 1,
-    },
-    columnCount: { color: colors.foregroundMuted, fontSize: 12 },
-    columnBody: { gap: 8, paddingBottom: 4 },
-    card: {
-      borderWidth: 1,
-      borderColor: colors.foregroundMuted,
-      borderRadius: 8,
-      padding: 10,
-      gap: 6,
-    },
-    cardTopRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-    cardNumber: {
-      color: colors.foregroundMuted,
-      fontSize: 12,
-      fontWeight: "600" as const,
-    },
-    cardParent: { color: colors.foregroundMuted, fontSize: 11 },
-    spacer: { flexGrow: 1 },
-    badge: {
-      borderWidth: 1,
-      borderRadius: 6,
-      paddingHorizontal: 6,
-      paddingVertical: 1,
-    },
-    badgeText: { fontSize: 10, fontWeight: "600" as const },
-    cardTitle: { color: colors.foreground, fontSize: 13, lineHeight: 18 },
-    cardMetaRow: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      justifyContent: "space-between" as const,
-      gap: 8,
-    },
-    sessionTag: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      gap: 5,
-      flexShrink: 1,
-    },
-    sessionDot: { width: 8, height: 8, borderRadius: 4 },
-    metaText: { color: colors.foregroundMuted, fontSize: 11 },
-    metaDone: { color: colors.accent },
-  };
 }

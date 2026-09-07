@@ -36,12 +36,114 @@ const { clientBundle } = await compilePlugin('/home/devuser/paseo-plugins/kanban
 // Данные, которые «вернёт» сервер плагина
 const snapshotFixture = JSON.parse(process.env.FIXTURE);
 let versionCounter = snapshotFixture.version;
+const moveCalls = [];
+const createCalls = [];
+const updateCalls = [];
+const subtaskCalls = [];
+const completeCalls = [];
+const deleteCalls = [];
 const rpcImpl = {
   'kanban.snapshot': () => Promise.resolve(process.env.MODE === 'error'
     ? { ok: false, error: 'kanban API недоступен по http://mcp-hub:3010 — fetch failed', snapshot: null }
     : { ok: true, error: null, snapshot: structuredClone(snapshotFixture) }),
   'kanban.version': () => Promise.resolve({ ok: true, error: null, version: versionCounter, connected: true }),
   'kanban.projects': () => Promise.resolve({ ok: true, error: null, projects: snapshotFixture.projects }),
+  'kanban.ticket': ({ ticketId }) => {
+    const card = snapshotFixture.tickets.find((t) => t.id === ticketId);
+    if (!card) return Promise.resolve({ ok: false, error: 'тикет не найден', ticket: null });
+    const doneColumn = snapshotFixture.columns.find((c) => c.name === 'Done');
+    const subtasks = snapshotFixture.tickets
+      .filter((t) => t.parent_ticket_id === card.id)
+      .map((t) => ({ id: t.id, ticket_number: t.ticket_number, title: t.title, priority: t.priority, column_id: t.column_id, done: t.column_id === doneColumn?.id }));
+    return Promise.resolve({
+      ok: true,
+      error: null,
+      ticket: {
+        ...card,
+        project_id: 'p1',
+        description: `Описание тикета #${card.ticket_number}`,
+        created_at: '2026-09-06T18:00:00.000Z',
+        updated_at: '2026-09-06T19:00:00.000Z',
+        subtasks,
+        subtask_total: subtasks.length,
+        subtask_completed: subtasks.filter((t) => t.done).length,
+        attachments: [{ id: 'a1', file_path: '/tmp/shots/demo.mp4', file_type: 'video' }],
+        dependencies: [],
+      },
+    });
+  },
+  'kanban.ticket.create': (input) => {
+    createCalls.push(input);
+    const number = 100 + createCalls.length;
+    snapshotFixture.tickets.push({
+      id: 'new' + number, ticket_number: number, title: input.title, priority: input.priority ?? null,
+      column_id: input.columnId, session_id: null, parent_ticket_id: null, parent_ticket_number: null,
+      subtask_total: 0, subtask_completed: 0, order: number,
+    });
+    versionCounter += 1;
+    snapshotFixture.version = versionCounter;
+    return Promise.resolve({ ok: true, error: null, ticketId: 'new' + number });
+  },
+  'kanban.ticket.update': (input) => {
+    updateCalls.push(input);
+    const card = snapshotFixture.tickets.find((t) => t.id === input.ticketId);
+    if (card) {
+      if (input.title !== undefined) card.title = input.title;
+      if (input.priority !== undefined) card.priority = input.priority;
+    }
+    versionCounter += 1;
+    snapshotFixture.version = versionCounter;
+    return Promise.resolve({ ok: true, error: null });
+  },
+  'kanban.subtask.create': ({ parentTicketId, title }) => {
+    subtaskCalls.push({ parentTicketId, title });
+    const parent = snapshotFixture.tickets.find((t) => t.id === parentTicketId);
+    const number = 200 + subtaskCalls.length;
+    snapshotFixture.tickets.push({
+      id: 'sub' + number, ticket_number: number, title, priority: null, column_id: parent.column_id,
+      session_id: null, parent_ticket_id: parentTicketId, parent_ticket_number: parent.ticket_number,
+      subtask_total: 0, subtask_completed: 0, order: number,
+    });
+    parent.subtask_total += 1;
+    versionCounter += 1;
+    snapshotFixture.version = versionCounter;
+    return Promise.resolve({ ok: true, error: null, ticketId: 'sub' + number });
+  },
+  'kanban.subtask.complete': ({ ticketId }) => {
+    completeCalls.push(ticketId);
+    const sub = snapshotFixture.tickets.find((t) => t.id === ticketId);
+    const done = snapshotFixture.columns.find((c) => c.name === 'Done');
+    if (sub) {
+      sub.column_id = done.id;
+      const parent = snapshotFixture.tickets.find((t) => t.id === sub.parent_ticket_id);
+      if (parent) parent.subtask_completed += 1;
+    }
+    versionCounter += 1;
+    snapshotFixture.version = versionCounter;
+    return Promise.resolve({ ok: true, error: null });
+  },
+  'kanban.ticket.delete': ({ ticketId }) => {
+    deleteCalls.push(ticketId);
+    const index = snapshotFixture.tickets.findIndex((t) => t.id === ticketId);
+    if (index >= 0) snapshotFixture.tickets.splice(index, 1);
+    versionCounter += 1;
+    snapshotFixture.version = versionCounter;
+    return Promise.resolve({ ok: true, error: null });
+  },
+  'kanban.ticket.move': ({ ticketId, columnId }) => {
+    moveCalls.push({ ticketId, columnId });
+    if (process.env.MODE === 'mutation-error') {
+      return new Promise((resolve) =>
+        setTimeout(() => resolve({ ok: false, error: 'PUT /api/tickets/x/move: Ticket not found (HTTP 404)' }), 40),
+      );
+    }
+    const card = snapshotFixture.tickets.find((t) => t.id === ticketId);
+    if (card) card.column_id = columnId;
+    versionCounter += 1;
+    snapshotFixture.version = versionCounter;
+    // Небольшая задержка — чтобы было видно, ловится ли двойной клик защёлкой.
+    return new Promise((resolve) => setTimeout(() => resolve({ ok: true, error: null }), 60));
+  },
 };
 // Настоящий useRpc отдаёт стабильный колбэк — иначе эффекты клиента
 // пересоздавались бы на каждый рендер. Стаб держим таким же стабильным.
@@ -89,6 +191,130 @@ await act(async () => { await new Promise(r => setTimeout(r, 50)); });
 const text = () => document.getElementById('root').textContent;
 console.log('--- после загрузки ---');
 console.log(text().slice(0, 600));
+
+// Создание тикета из колонки: «+» → форма → Create.
+if (process.env.MODE !== 'error') {
+  console.log('--- создание тикета ---');
+  const plus = document.querySelector('[aria-label="Создать тикет в Todo"]');
+  await act(async () => { plus.click(); });
+  const createButton = () => document.querySelector('[aria-label="Создать тикет"]');
+  console.log('форма открылась:', createButton() !== null);
+  console.log('Create при пустом заголовке disabled:', createButton()?.getAttribute('aria-disabled') === 'true' || createButton()?.disabled === true);
+  const titleInput = document.querySelector('[aria-label="Заголовок тикета"]');
+  const descInput = document.querySelector('[aria-label="Описание тикета"]');
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setter.call(titleInput, 'тикет из UI');
+    titleInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    const areaSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set;
+    areaSetter.call(descInput, 'описание из UI');
+    descInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await act(async () => { document.querySelector('[aria-label="Приоритет urgent"]').click(); });
+  console.log('Create после ввода disabled:', createButton()?.getAttribute('aria-disabled') === 'true');
+  await act(async () => { createButton().click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+  console.log('createTicket вызван с:', JSON.stringify(createCalls[0]));
+  console.log('форма закрылась:', document.querySelector('[aria-label="Создать тикет"]') === null);
+  console.log('карточка на доске:', text().includes('тикет из UI'));
+}
+
+// Перемещение с карточки: ◀ ▶ и защита от двойного клика.
+if (process.env.MODE !== 'error' && snapshotFixture.tickets.length > 0) {
+  const card = snapshotFixture.tickets.find((t) => t.column_id === 'c1');
+  const next = document.querySelector(`[aria-label="Переместить #${card.ticket_number} в Todo"]`);
+  console.log('--- перемещение с карточки ---');
+  console.log('кнопка ▶ есть:', next !== null);
+  console.log('кнопка ◀ у первой колонки:', document.querySelector(`[aria-label="Переместить #${card.ticket_number} в Backlog"]`) !== null);
+  await act(async () => { next.click(); next.click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 300)); });
+  console.log('вызовов move после двойного клика:', moveCalls.length, '| колонка тикета:', card.column_id);
+  const toast = document.querySelector('[aria-label="Скрыть сообщение об ошибке"]');
+  console.log('тост об ошибке:', toast === null ? '(нет — мутация прошла)' : toast.textContent);
+  if (toast !== null) {
+    await act(async () => { toast.click(); });
+    console.log('после тапа тост исчез:', document.querySelector('[aria-label="Скрыть сообщение об ошибке"]') === null);
+  }
+}
+
+// Модалка деталей: тапаем по карточке.
+if (process.env.MODE !== 'error' && snapshotFixture.tickets.length > 0) {
+  const first = snapshotFixture.tickets[0];
+  const card = document.querySelector(`[aria-label="Открыть тикет #${first.ticket_number}"]`);
+  await act(async () => { card.click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+  console.log('--- модалка деталей ---');
+  // RN-web рендерит Modal порталом в body, а не внутрь #root.
+  const dialog = document.querySelector('[aria-label="Закрыть окно тикета"]')?.parentElement;
+  console.log('модалка открылась:', dialog !== undefined && dialog !== null);
+  console.log((dialog?.textContent ?? '(модалки нет)').slice(0, 400));
+  const chips = [...document.querySelectorAll('[aria-label^="Переместить в "]')].map((n) => n.textContent);
+  console.log('чипы колонок в модалке:', chips.join(' / '));
+
+  // Сабтаски: добавить и завершить.
+  console.log('--- сабтаски в модалке ---');
+  const subInput = document.querySelector('[aria-label="Заголовок нового сабтаска"]');
+  const addButton = () => document.querySelector('[aria-label="Добавить сабтаск"]');
+  console.log('«Добавить» при пустом поле disabled:', addButton()?.getAttribute('aria-disabled') === 'true');
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setter.call(subInput, 'новый сабтаск из UI');
+    subInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await act(async () => { addButton().click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+  console.log('createSubtask вызван с:', JSON.stringify(subtaskCalls[0]));
+  const boxes = [...document.querySelectorAll('[aria-label^="Завершить сабтаск"]')];
+  console.log('чекбоксов сабтасков:', boxes.length, '| disabled у завершённого:', boxes.map((b) => b.getAttribute('aria-disabled')).join(','));
+  const open2 = boxes.find((b) => b.getAttribute('aria-disabled') !== 'true');
+  await act(async () => { open2.click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 150)); });
+  console.log('completeSubtask вызван:', completeCalls.length, '| прогресс на доске:', text().match(/\d+\/\d+/g)?.join(' '));
+
+  // Режим редактирования: Изменить → правки → Save.
+  await act(async () => { document.querySelector('[aria-label="Редактировать тикет"]').click(); });
+  const titleField = document.querySelector('[aria-label="Заголовок тикета"]');
+  console.log('форма редактирования открылась:', titleField !== null, '| значение подставлено:', titleField?.value);
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setter.call(titleField, '');
+    titleField.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  const saveButton = () => document.querySelector('[aria-label="Сохранить тикет"]');
+  console.log('Save при пустом заголовке disabled:', saveButton()?.getAttribute('aria-disabled') === 'true');
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setter.call(titleField, 'заголовок из модалки');
+    titleField.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await act(async () => { document.querySelector('[aria-label="Приоритет low"]').click(); });
+  await act(async () => { saveButton().click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+  console.log('updateTicket вызван с:', JSON.stringify(updateCalls[0]));
+  console.log('форма закрылась:', document.querySelector('[aria-label="Заголовок тикета"]') === null);
+  console.log('доска показывает новый заголовок:', text().includes('заголовок из модалки'));
+  // Закрытие по крестику (и повторное открытие для сценария удаления).
+  await act(async () => { document.querySelector('[aria-label="Закрыть"]').click(); });
+  console.log('✕ закрывает модалку:', document.querySelector('[aria-label="Закрыть окно тикета"]') === null);
+  await act(async () => {
+    document.querySelector(`[aria-label="Открыть тикет #${first.ticket_number}"]`).click();
+  });
+  await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+
+  // Удаление: Delete → подтверждение → Удалить.
+  console.log('--- удаление тикета ---');
+  await act(async () => { document.querySelector('[aria-label="Удалить тикет"]').click(); });
+  const confirmNode = document.querySelector('[aria-label="Подтвердить удаление"]');
+  console.log('подтверждение показано:', confirmNode !== null);
+  console.log('текст подтверждения:', confirmNode?.parentElement?.parentElement?.textContent?.slice(0, 200));
+  await act(async () => { document.querySelector('[aria-label="Отменить удаление"]').click(); });
+  console.log('после «Отмена» удаление не вызвано:', deleteCalls.length === 0, '| кнопка Delete снова видна:', document.querySelector('[aria-label="Удалить тикет"]') !== null);
+  await act(async () => { document.querySelector('[aria-label="Удалить тикет"]').click(); });
+  await act(async () => { document.querySelector('[aria-label="Подтвердить удаление"]').click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 120)); });
+  console.log('delete вызван:', deleteCalls.length, '| модалка закрылась:', document.querySelector('[aria-label="Закрыть окно тикета"]') === null);
+  console.log('карточка исчезла с доски:', !text().includes('заголовок из модалки'));
+}
 
 // Выпадашка проектов: жмём на имя проекта и смотрим, что список раскрылся.
 if (process.env.MODE !== 'error') {

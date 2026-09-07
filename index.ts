@@ -1,8 +1,30 @@
 import type { PluginContext } from "@getpaseo/plugin";
 import { KanbanBoard } from "./board.client";
-import { kanbanProjects, kanbanSnapshot, kanbanVersion, type Snapshot } from "./contract";
+import {
+  kanbanCompleteSubtask,
+  kanbanCreateSubtask,
+  kanbanCreateTicket,
+  kanbanDeleteTicket,
+  kanbanMoveTicket,
+  kanbanProjects,
+  kanbanSnapshot,
+  kanbanTicket,
+  kanbanUpdateTicket,
+  kanbanVersion,
+  type Snapshot,
+} from "./contract";
 import { ensureBoardRunning } from "./kanban-autostart.server";
-import { fetchBoard, fetchProjects } from "./kanban-api.server";
+import {
+  completeSubtask,
+  createSubtask,
+  createTicket,
+  deleteTicket,
+  fetchBoard,
+  fetchProjects,
+  fetchTicketDetails,
+  moveTicket,
+  updateTicket,
+} from "./kanban-api.server";
 import { currentVersion, ensureLive, isConnected, stopLive } from "./kanban-live.server";
 
 // Точка входа. Компилируется дважды: в server-бандле остаются plugin.handle(...),
@@ -60,6 +82,55 @@ export default function contribute(plugin: PluginContext) {
       }
       return { ok: true, error: null, projects: result.data };
     });
+  });
+
+  plugin.handle(kanbanTicket, ({ ticketId }) => {
+    return fetchTicketDetails(ticketId).then((result) => {
+      if (result.error !== null || result.ticket === null) {
+        return { ok: false, error: result.error ?? "тикет не найден", ticket: null };
+      }
+      return { ok: true, error: null, ticket: result.ticket };
+    });
+  });
+
+  plugin.handle(kanbanMoveTicket, ({ ticketId, columnId, order }) => {
+    return moveTicket(ticketId, columnId, order).then((error) =>
+      error === null ? { ok: true, error: null } : { ok: false, error },
+    );
+  });
+
+  plugin.handle(kanbanCreateTicket, (input) => {
+    return createTicket(input).then((result) =>
+      result.error === null
+        ? { ok: true, error: null, ticketId: result.ticketId }
+        : { ok: false, error: result.error, ticketId: null },
+    );
+  });
+
+  plugin.handle(kanbanUpdateTicket, (input) => {
+    return updateTicket(input).then((error) =>
+      error === null ? { ok: true, error: null } : { ok: false, error },
+    );
+  });
+
+  plugin.handle(kanbanDeleteTicket, ({ ticketId }) => {
+    return deleteTicket(ticketId).then((error) =>
+      error === null ? { ok: true, error: null } : { ok: false, error },
+    );
+  });
+
+  plugin.handle(kanbanCreateSubtask, (input) => {
+    return createSubtask(input).then((result) =>
+      result.error === null
+        ? { ok: true, error: null, ticketId: result.ticketId }
+        : { ok: false, error: result.error, ticketId: null },
+    );
+  });
+
+  plugin.handle(kanbanCompleteSubtask, ({ ticketId }) => {
+    return completeSubtask(ticketId).then((error) =>
+      error === null ? { ok: true, error: null } : { ok: false, error },
+    );
   });
 
   plugin.addSurface("main", KanbanBoard);
