@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# Lockfile намеренно не коммитится: плагин ставится через `npm install`
+# (см. README). Полная git-история — в локальном репозитории на VPS.
+package-lock.json
