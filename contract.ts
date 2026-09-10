@@ -206,6 +206,15 @@ export const kanbanDeleteTicket = defineRpc({
   output: MutationOutput,
 });
 
+// Удаление проекта целиком. Каскад в схеме борды уносит колонки, тикеты и
+// сабтаски (project_id … ON DELETE CASCADE), поэтому подтверждение на клиенте
+// строже, чем у тикета: там нужно ввести имя проекта.
+export const kanbanProjectDelete = defineRpc({
+  name: "kanban.project.delete",
+  input: z.object({ projectId: z.string() }),
+  output: MutationOutput,
+});
+
 export const kanbanCreateSubtask = defineRpc({
   name: "kanban.subtask.create",
   input: z.object({

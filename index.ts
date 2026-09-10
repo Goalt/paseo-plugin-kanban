@@ -6,6 +6,7 @@ import {
   kanbanCreateTicket,
   kanbanDeleteTicket,
   kanbanMoveTicket,
+  kanbanProjectDelete,
   kanbanProjects,
   kanbanSnapshot,
   kanbanStateGet,
@@ -20,6 +21,7 @@ import {
   completeSubtask,
   createSubtask,
   createTicket,
+  deleteProject,
   deleteTicket,
   fetchBoard,
   fetchProjects,
@@ -27,7 +29,7 @@ import {
   moveTicket,
   updateTicket,
 } from "./kanban-api.server";
-import { currentVersion, ensureLive, isConnected, stopLive } from "./kanban-live.server";
+import { bumpVersion, currentVersion, ensureLive, isConnected, stopLive } from "./kanban-live.server";
 import { getSelectedProject, setSelectedProject } from "./plugin-state.server";
 
 // Точка входа. Компилируется дважды: в server-бандле остаются plugin.handle(...),
@@ -120,6 +122,20 @@ export default function contribute(plugin: PluginContext) {
     return deleteTicket(ticketId).then((error) =>
       error === null ? { ok: true, error: null } : { ok: false, error },
     );
+  });
+
+  plugin.handle(kanbanProjectDelete, ({ projectId }) => {
+    return deleteProject(projectId).then((error) => {
+      if (error !== null) return { ok: false, error };
+      // Иначе сервер продолжит открывать доску по id, которого больше нет:
+      // fetchBoard молча откатится на первый проект, но память останется битой.
+      if (getSelectedProject() === projectId) setSelectedProject(null);
+      // Событий project:* борда по WS не шлёт (kanban-live.server слушает только
+      // ticket:/subtask:/session:/column:), поэтому версию двигаем руками —
+      // без этого соседняя панель узнает об удалении лишь по кнопке «Обновить».
+      bumpVersion();
+      return { ok: true, error: null };
+    });
   });
 
   plugin.handle(kanbanCreateSubtask, (input) => {

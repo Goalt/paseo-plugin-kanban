@@ -119,6 +119,13 @@ export function createStyles(colors: Colors, compact: boolean) {
     },
     pickerItem: { paddingVertical: 8, paddingHorizontal: 12 },
     pickerItemActive: { backgroundColor: colors.accent },
+    // Строка проекта: имя и кнопка удаления — СОСЕДНИЕ Pressable внутри View.
+    // Вложенные Pressable на вебе ловят один клик дважды (см. карточку тикета).
+    pickerRow: { flexDirection: "row" as const, alignItems: "center" as const },
+    pickerItemFill: { flexGrow: 1, flexShrink: 1 },
+    // Компактный вариант dangerButton: в выпадашке шириной 200–320 px обычные
+    // отступы кнопки съедают половину строки.
+    pickerDelete: { paddingVertical: 2, paddingHorizontal: 7, marginRight: 8 },
     pickerText: { color: colors.foreground, fontSize: 13 },
     pickerTextActive: { color: colors.accentForeground, fontSize: 13, fontWeight: "600" as const },
     pickerEmpty: { color: colors.foregroundMuted, fontSize: 13, padding: 12 },

@@ -15,6 +15,7 @@ import {
   type TicketCard,
 } from "./contract";
 import { useMutationRunner } from "./mutations.client";
+import { DeleteProjectModal } from "./project-delete.client";
 import { CreateTicketModal } from "./ticket-form.client";
 import { TicketModal } from "./ticket-modal.client";
 import { Toast } from "./toast.client";
@@ -57,6 +58,8 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
   // Фильтр по сессии агента: null — показывать все тикеты.
   const [sessionFilter, setSessionFilter] = useState<string | null>(null);
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
+  // Проект, для которого открыто подтверждение удаления (null — подтверждения нет).
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
 
   const aliveRef = useRef(true);
   // Какой проект хотим видеть: null — «первый по списку API» (дефолт до первого ответа).
@@ -136,6 +139,21 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
     [mutation, sendMove, load],
   );
 
+  // Смена показываемой доски: старую не оставляем на экране, пока грузится новая.
+  // id === null — «первый проект по списку API» (после удаления открытого проекта).
+  const switchTo = useCallback(
+    (id: string | null) => {
+      setBoard(null);
+      setError(null);
+      setLoading(true);
+      hasBoardRef.current = false;
+      failsRef.current = 0;
+      appliedVersionRef.current = -1;
+      load(id, false);
+    },
+    [load],
+  );
+
   const selectProject = useCallback(
     (id: string) => {
       setPickerOpen(false);
@@ -145,15 +163,27 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
       saveState({ projectId: id }).catch(() => {
         // не смогли запомнить — доска всё равно откроет выбранный проект сейчас
       });
-      setBoard(null);
-      setError(null);
-      setLoading(true);
-      hasBoardRef.current = false;
-      failsRef.current = 0;
-      appliedVersionRef.current = -1;
-      load(id, false);
+      switchTo(id);
     },
-    [load, saveState],
+    [switchTo, saveState],
+  );
+
+  // Успешное удаление проекта. Память сервера плагина уже очищена хендлером,
+  // поэтому saveState тут не нужен: снапшот с projectId=null сам выберет
+  // projects[0], а load пересинхронизирует projectIdRef из ответа.
+  const projectDeleted = useCallback(
+    (deletedId: string) => {
+      const wasCurrent = deletedId === projectIdRef.current;
+      setDeleteTarget(null);
+      setPickerOpen(false);
+      if (wasCurrent) {
+        switchTo(null);
+        return;
+      }
+      // Удалили соседний проект — открытую доску не трогаем, обновляем список.
+      load(projectIdRef.current, true);
+    },
+    [switchTo, load],
   );
 
   useEffect(() => {
@@ -386,6 +416,19 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
         />
       ) : null}
 
+      {deleteTarget !== null ? (
+        <DeleteProjectModal
+          project={deleteTarget}
+          ticketCount={
+            deleteTarget.id === (board?.project?.id ?? null) ? board?.tickets.length ?? null : null
+          }
+          colors={theme.colors}
+          styles={styles}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={() => projectDeleted(deleteTarget.id)}
+        />
+      ) : null}
+
       {openTicketId !== null ? (
         <TicketModal
           ticketId={openTicketId}
@@ -406,6 +449,7 @@ export function KanbanBoard({ theme, layout }: PluginSurfaceProps) {
           projects={board?.projects ?? []}
           currentId={board?.project?.id ?? null}
           onSelect={selectProject}
+          onDelete={setDeleteTarget}
           onDismiss={() => setPickerOpen(false)}
           styles={styles}
         />
@@ -433,15 +477,21 @@ function ProjectPicker({
   projects,
   currentId,
   onSelect,
+  onDelete,
   onDismiss,
   styles,
 }: {
   projects: Project[];
   currentId: string | null;
   onSelect: (id: string) => void;
+  // Только открывает подтверждение — само удаление живёт в DeleteProjectModal.
+  onDelete: (project: Project) => void;
   onDismiss: () => void;
   styles: Styles;
 }) {
+  // Последний проект борда удалять не даёт (400 «Cannot delete the only
+  // project») — кнопку в этом случае не показываем вовсе.
+  const deletable = projects.length > 1;
   return (
     <View style={styles.pickerLayer}>
       <Pressable
@@ -458,17 +508,36 @@ function ProjectPicker({
           {projects.map((project) => {
             const active = project.id === currentId;
             return (
-              <Pressable
+              // Вложенные Pressable на вебе ловят один клик дважды, поэтому
+              // «открыть» и «удалить» — соседи в строке (как ◀▶ на карточке).
+              <View
                 key={project.id}
-                accessibilityRole="button"
-                accessibilityLabel={`Открыть проект ${project.name}`}
-                onPress={() => onSelect(project.id)}
-                style={[styles.pickerItem, active ? styles.pickerItemActive : null]}
+                style={[styles.pickerRow, active ? styles.pickerItemActive : null]}
               >
-                <Text style={active ? styles.pickerTextActive : styles.pickerText} numberOfLines={1}>
-                  {project.name}
-                </Text>
-              </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Открыть проект ${project.name}`}
+                  onPress={() => onSelect(project.id)}
+                  style={[styles.pickerItem, styles.pickerItemFill]}
+                >
+                  <Text
+                    style={active ? styles.pickerTextActive : styles.pickerText}
+                    numberOfLines={1}
+                  >
+                    {project.name}
+                  </Text>
+                </Pressable>
+                {deletable ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Удалить проект ${project.name}`}
+                    onPress={() => onDelete(project)}
+                    style={[styles.dangerButton, styles.pickerDelete]}
+                  >
+                    <Text style={styles.dangerButtonText}>✕</Text>
+                  </Pressable>
+                ) : null}
+              </View>
             );
           })}
         </ScrollView>

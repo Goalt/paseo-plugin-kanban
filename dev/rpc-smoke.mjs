@@ -324,4 +324,74 @@ async function runMutations() {
 
   const missing = await invoke("kanban.ticket", { ticketId: "00000000-0000-0000-0000-000000000000" });
   expect(!missing.ok && missing.error !== null, "несуществующий тикет → ok=false с текстом ошибки");
+
+  await runProjectDelete();
+}
+
+// Удаление проекта (#37). Проект создаём здесь же и здесь же удаляем — живые
+// доски пользователя не трогаем ни при каком раскладе. Память выбранного проекта
+// пишется в KANBAN_STATE_FILE, так что запускать смоук лучше с отдельным файлом:
+//   KANBAN_STATE_FILE=/tmp/kanban-smoke-state.json node dev/rpc-smoke.mjs --mutations
+async function runProjectDelete() {
+  const base = (process.env.KANBAN_URL ?? "http://mcp-hub:3010").replace(/\/+$/, "");
+  const name = `nsdel-smoke-${Math.random().toString(36).slice(2, 8)}`;
+
+  console.log(`\n[project.delete] временный проект «${name}»`);
+  const created = await fetch(`${base}/api/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  }).then((response) => response.json());
+  expect(typeof created.id === "string", `проект создан (${created.id})`);
+  if (typeof created.id !== "string") return;
+
+  // Колонки борда заводит сама (dal.createProject seed'ит DEFAULT_COLUMNS).
+  const fresh = await invoke("kanban.snapshot", { projectId: created.id });
+  expect(fresh.snapshot?.project?.id === created.id, "снапшот открывает новый проект");
+  const backlog = fresh.snapshot?.columns.find((column) => column.name === "Backlog");
+
+  const story = await invoke("kanban.ticket.create", {
+    projectId: created.id,
+    title: "смоук: история для каскада",
+    columnId: backlog?.id,
+  });
+  const sub = await invoke("kanban.subtask.create", {
+    parentTicketId: story.ticketId,
+    title: "смоук: сабтаск для каскада",
+  });
+  expect(story.ok && sub.ok, "в проекте есть тикет и сабтаск");
+
+  // Память сервера плагина указывает на удаляемый проект — после удаления
+  // хендлер обязан её обнулить, иначе доска будет проситься по мёртвому id.
+  const before = await invoke("kanban.state.get", {});
+  await invoke("kanban.state.set", { projectId: created.id });
+
+  const versionBefore = (await invoke("kanban.version", {})).version;
+  const removed = await invoke("kanban.project.delete", { projectId: created.id });
+  expect(removed.ok && removed.error === null, "kanban.project.delete ok");
+
+  const projectsAfter = await invoke("kanban.projects", {});
+  expect(
+    projectsAfter.projects.every((project) => project.id !== created.id),
+    "проект исчез из списка",
+  );
+  expect(
+    (await invoke("kanban.version", {})).version > versionBefore,
+    "версия доски выросла (bumpVersion) — соседние панели узнают об удалении",
+  );
+  expect((await invoke("kanban.state.get", {})).projectId === null, "память выбранного проекта очищена");
+  expect(!(await invoke("kanban.ticket", { ticketId: story.ticketId })).ok, "тикет удалён каскадом");
+  expect(!(await invoke("kanban.ticket", { ticketId: sub.ticketId })).ok, "сабтаск удалён каскадом");
+
+  // Снапшот без projectId должен молча открыть первый живой проект, а не упасть.
+  const fallback = await invoke("kanban.snapshot", { projectId: created.id });
+  expect(
+    fallback.ok && fallback.snapshot?.project !== null && fallback.snapshot?.project?.id !== created.id,
+    `снапшот по мёртвому id откатывается на «${fallback.snapshot?.project?.name}»`,
+  );
+
+  const again = await invoke("kanban.project.delete", { projectId: created.id });
+  expect(!again.ok && again.error !== null, `повторное удаление → ${again.error}`);
+
+  await invoke("kanban.state.set", { projectId: before.projectId });
 }

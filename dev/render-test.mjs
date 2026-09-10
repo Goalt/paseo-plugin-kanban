@@ -42,6 +42,7 @@ const updateCalls = [];
 const subtaskCalls = [];
 const completeCalls = [];
 const deleteCalls = [];
+const projectDeleteCalls = [];
 // «Память сервера плагина» для теста перемонтирования.
 let storedProjectId = process.env.STORED_PROJECT ?? null;
 const snapshotCalls = [];
@@ -144,6 +145,27 @@ const rpcImpl = {
     snapshotFixture.version = versionCounter;
     return Promise.resolve({ ok: true, error: null });
   },
+  'kanban.project.delete': ({ projectId }) => {
+    projectDeleteCalls.push(projectId);
+    if (process.env.PROJECT_DELETE_FAIL === '1') {
+      return Promise.resolve({
+        ok: false,
+        error: 'DELETE /api/projects/' + projectId + ': Cannot delete the only project (HTTP 400)',
+      });
+    }
+    const index = snapshotFixture.projects.findIndex((p) => p.id === projectId);
+    if (index >= 0) snapshotFixture.projects.splice(index, 1);
+    // Сервер плагина забывает выбор и откатывается на первый проект (fetchBoard).
+    if (snapshotFixture.project?.id === projectId) {
+      snapshotFixture.project = snapshotFixture.projects[0] ?? null;
+      // У соседнего проекта свои тикеты — в фикстуре их нет, доска должна пережить пустоту.
+      snapshotFixture.tickets = [];
+    }
+    if (storedProjectId === projectId) storedProjectId = null;
+    versionCounter += 1;
+    snapshotFixture.version = versionCounter;
+    return Promise.resolve({ ok: true, error: null });
+  },
   'kanban.ticket.move': ({ ticketId, columnId }) => {
     moveCalls.push({ ticketId, columnId });
     if (process.env.MODE === 'mutation-error') {
@@ -201,6 +223,9 @@ const THEMES = {
   dark: { surface0: '#18181b', foreground: '#fafafa', foregroundMuted: '#a1a1aa', accent: '#e4e4e7', accentForeground: '#18181b', statusDanger: '#c44a4a' },
   light: { surface0: '#ffffff', foreground: '#1a1a1e', foregroundMuted: '#71717a', accent: '#20744A', accentForeground: '#ffffff', statusDanger: '#9d433b' },
 };
+// Фикстура без проектов (все удалены) — теоретический, но не запрещённый кейс:
+// интерактивные сценарии на ней пропускаем, проверяем только empty-states.
+const emptyBoard = snapshotFixture.projects.length === 0;
 const themeName = process.env.THEME ?? 'dark';
 const compact = process.env.COMPACT === '1';
 const theme = { colors: THEMES[themeName] ?? THEMES.dark };
@@ -250,7 +275,7 @@ console.log('счётчик в работе:', document.querySelector('[aria-lab
 console.log(text().slice(0, 600));
 
 // Создание тикета из колонки: «+» → форма → Create.
-if (process.env.MODE !== 'error') {
+if (process.env.MODE !== 'error' && !emptyBoard) {
   console.log('--- создание тикета ---');
   const plus = document.querySelector('[aria-label="Создать тикет в Todo"]');
   await act(async () => { plus.click(); });
@@ -392,7 +417,7 @@ if (process.env.MODE !== 'error' && snapshotFixture.tickets.length > 0) {
 }
 
 // Перемонтирование поверхности: выбор проекта живёт на сервере плагина.
-if (process.env.MODE !== 'error') {
+if (process.env.MODE !== 'error' && !emptyBoard) {
   console.log('--- перемонтирование поверхности ---');
   await act(async () => { document.querySelector('[aria-label="Выбрать проект"]').click(); });
   await act(async () => { document.querySelector('[aria-label="Открыть проект freqtrade"]').click(); });
@@ -407,7 +432,7 @@ if (process.env.MODE !== 'error') {
 }
 
 // Фильтр по сессии.
-if (process.env.MODE !== 'error') {
+if (process.env.MODE !== 'error' && !emptyBoard) {
   console.log('--- фильтр по сессии ---');
   await act(async () => { document.querySelector('[aria-label="Фильтр по сессии"]').click(); });
   const options = [...document.querySelectorAll('[aria-label^="Фильтр по сессии "], [aria-label="Показать все сессии"]')].map((n) => n.textContent);
@@ -434,9 +459,77 @@ if (process.env.MODE !== 'error') {
   const menuItems = [...document.querySelectorAll('[aria-label^="Открыть проект"]')].map((n) => n.textContent);
   console.log('--- выпадашка проектов ---');
   console.log('пунктов:', menuItems.length, '|', menuItems.join(' / '));
+  if (emptyBoard) {
+    console.log('доска без проектов:', text().replace(/\s+/g, ' ').slice(0, 120));
+  }
   const backdrop = document.querySelector('[aria-label="Закрыть список проектов"]');
   await act(async () => { backdrop.click(); });
   console.log('после закрытия пунктов:', document.querySelectorAll('[aria-label^="Открыть проект"]').length);
+}
+
+// Удаление проекта: ✕ в выпадашке → подтверждение вводом имени → доска переключается.
+if (process.env.MODE !== 'error' && !emptyBoard) {
+  console.log('--- удаление проекта ---');
+  const setValue = (node, value) => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setter.call(node, value);
+    node.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  };
+  const confirmButton = () => document.querySelector('[aria-label="Подтвердить удаление проекта"]');
+  const nameField = () => document.querySelector('[aria-label="Имя проекта для подтверждения"]');
+  const openPicker = async () => {
+    await act(async () => { document.querySelector('[aria-label="Выбрать проект"]').click(); });
+  };
+
+  await openPicker();
+  console.log(
+    'кнопок ✕ в списке:', document.querySelectorAll('[aria-label^="Удалить проект"]').length,
+    '| проектов:', snapshotFixture.projects.length,
+  );
+
+  // 1. Соседний (не открытый) проект.
+  const other = snapshotFixture.projects.find((p) => p.id !== snapshotFixture.project.id);
+  await act(async () => { document.querySelector(`[aria-label="Удалить проект ${other.name}"]`).click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 60)); });
+  console.log('подтверждение открылось:', confirmButton() !== null);
+  console.log('«Удалить» до ввода имени disabled:', confirmButton()?.getAttribute('aria-disabled') === 'true');
+  await act(async () => { setValue(nameField(), other.name.slice(0, -1)); });
+  console.log('после неточного ввода disabled:', confirmButton()?.getAttribute('aria-disabled') === 'true');
+  await act(async () => { setValue(nameField(), other.name); });
+  console.log('после точного ввода disabled:', confirmButton()?.getAttribute('aria-disabled') === 'true');
+  const toastNow = () => document.querySelector('[aria-label="Скрыть сообщение об ошибке"]');
+  await act(async () => { confirmButton().click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 150)); });
+  if (process.env.PROJECT_DELETE_FAIL === '1') {
+    console.log('ошибка ушла в тост:', toastNow()?.textContent ?? '(тоста нет)');
+    console.log('модалка осталась открытой:', confirmButton() !== null);
+    process.exit(0);
+  }
+  console.log('project.delete вызван с:', JSON.stringify(projectDeleteCalls));
+  console.log('подтверждение закрылось:', confirmButton() === null, '| выпадашка закрылась:', document.querySelectorAll('[aria-label^="Открыть проект"]').length === 0);
+  console.log('открытый проект не менялся:', text().includes(snapshotFixture.project.name), '| запрошен projectId:', snapshotCalls[snapshotCalls.length - 1]);
+
+  // 2. Текущий проект: доска должна переехать на первый оставшийся.
+  const current = snapshotFixture.project;
+  await openPicker();
+  await act(async () => { document.querySelector(`[aria-label="Удалить проект ${current.name}"]`).click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 60)); });
+  const warning = confirmButton()?.parentElement?.parentElement?.textContent ?? '';
+  console.log('текст предупреждения:', warning.replace(/\s+/g, ' ').slice(0, 160));
+  await act(async () => { setValue(nameField(), current.name); });
+  await act(async () => { confirmButton().click(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 200)); });
+  console.log('после удаления запрошен projectId:', snapshotCalls[snapshotCalls.length - 1], '(ожидался null)');
+  console.log('в шапке новый проект:', text().slice(0, 80).replace(/\s+/g, ' '));
+  console.log('счётчик тикетов в шапке:', text().match(/\d+ тикетов · \d+ колонок/)?.[0] ?? '(нет)');
+
+  // 3. Остался один проект — удалять нечего, ✕ не рендерим.
+  await openPicker();
+  console.log(
+    'проектов осталось:', snapshotFixture.projects.length,
+    '| кнопок ✕:', document.querySelectorAll('[aria-label^="Удалить проект"]').length,
+  );
+  await act(async () => { document.querySelector('[aria-label="Закрыть список проектов"]').click(); });
 }
 
 if (process.env.MODE !== 'error' && snapshotFixture.tickets.length > 0) {

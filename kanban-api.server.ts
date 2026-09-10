@@ -460,6 +460,17 @@ export function deleteTicket(ticketId: string): Promise<string | null> {
   );
 }
 
+// DELETE /api/projects/:id. Колонки, тикеты и сабтаски проекта уходят каскадом:
+// в схеме борды (db/dal.ts, runMigrations) у columns.project_id и tickets.project_id
+// стоит REFERENCES projects(id) ON DELETE CASCADE при включённом PRAGMA foreign_keys.
+// Единственный оставшийся проект борда удалять не даёт — вернёт 400
+// «Cannot delete the only project» (проверка идёт ДО поиска проекта по id).
+export function deleteProject(projectId: string): Promise<string | null> {
+  return apiSend<{ ok: boolean }>("DELETE", `/api/projects/${encodeURIComponent(projectId)}`).then(
+    (result) => result.error,
+  );
+}
+
 // POST /api/tickets/:id/subtasks — CreateSubtaskInput (title, description?, priority?).
 // Сабтаск наследует проект, колонку и сессию родителя (dal.createSubtask).
 export function createSubtask(input: {
