@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { checkHealth, kanbanBaseUrl } from "./kanban-api.server";
+import { checkHealth, kanbanBaseUrl } from "./kanban-api";
 
 // Борда mcp-kanban на 3010 живёт только после `open_board` (или нашего старта):
 // после пересоздания/рестарта контейнера её некому поднять. Если health молчит —

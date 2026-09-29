@@ -1,5 +1,5 @@
-import type { PluginSurfaceProps } from "@getpaseo/plugin";
-import { useRpc } from "@getpaseo/plugin";
+import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
@@ -13,12 +13,12 @@ import {
   type Session,
   type Snapshot,
   type TicketCard,
-} from "./contract";
-import { useMutationRunner } from "./mutations.client";
-import { DeleteProjectModal } from "./project-delete.client";
-import { CreateTicketModal } from "./ticket-form.client";
-import { TicketModal } from "./ticket-modal.client";
-import { Toast } from "./toast.client";
+} from "../shared/contract";
+import { useMutationRunner } from "./mutations";
+import { DeleteProjectModal } from "./project-delete";
+import { CreateTicketModal } from "./ticket-form";
+import { TicketModal } from "./ticket-modal";
+import { Toast } from "./toast";
 import {
   createStyles,
   describe,
@@ -26,7 +26,7 @@ import {
   priorityStyle,
   type Colors,
   type Styles,
-} from "./ui.client";
+} from "./ui";
 
 // ВАЖНО: компилятор демона 0.6.1 не понижает синтаксис ES2017 в клиентском бандле,
 // и Hermes на iOS/Android молча не грузит такой плагин. Поэтому здесь только

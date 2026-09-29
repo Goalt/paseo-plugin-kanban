@@ -1,10 +1,10 @@
-import { useRpc } from "@getpaseo/plugin";
+import { useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useState } from "react";
 import { Modal as NativeModal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { kanbanProjectDelete, type Project } from "./contract";
-import { useMutationRunner } from "./mutations.client";
-import { Toast } from "./toast.client";
-import type { Colors, Styles } from "./ui.client";
+import { kanbanProjectDelete, type Project } from "../shared/contract";
+import { useMutationRunner } from "./mutations";
+import { Toast } from "./toast";
+import type { Colors, Styles } from "./ui";
 
 // Подтверждение удаления проекта. В отличие от тикета (там хватает «Удалить?»),
 // здесь каскадом уходит вся доска — колонки, тикеты и сабтаски, — поэтому кнопка

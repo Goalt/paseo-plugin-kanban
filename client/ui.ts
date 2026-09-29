@@ -1,5 +1,5 @@
-import type { PluginSurfaceProps } from "@getpaseo/plugin";
-import type { Priority } from "./contract";
+import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
+import type { Priority } from "../shared/contract";
 
 // Общие для доски и модалки цвета, стили и мелкие хелперы.
 // Ограничения клиентского бандла 0.6.1 те же: никакого асинхронного сахара,

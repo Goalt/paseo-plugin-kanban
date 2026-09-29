@@ -1,5 +1,4 @@
-import type { PluginContext } from "@getpaseo/plugin";
-import { KanbanBoard } from "./board.client";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   kanbanCompleteSubtask,
   kanbanCreateSubtask,
@@ -15,8 +14,8 @@ import {
   kanbanUpdateTicket,
   kanbanVersion,
   type Snapshot,
-} from "./contract";
-import { ensureBoardRunning } from "./kanban-autostart.server";
+} from "./shared/contract";
+import { ensureBoardRunning } from "./server/kanban-autostart";
 import {
   completeSubtask,
   createSubtask,
@@ -28,13 +27,11 @@ import {
   fetchTicketDetails,
   moveTicket,
   updateTicket,
-} from "./kanban-api.server";
-import { bumpVersion, currentVersion, ensureLive, isConnected, stopLive } from "./kanban-live.server";
-import { getSelectedProject, setSelectedProject } from "./plugin-state.server";
+} from "./server/kanban-api";
+import { bumpVersion, currentVersion, ensureLive, isConnected, stopLive } from "./server/kanban-live";
+import { getSelectedProject, setSelectedProject } from "./server/plugin-state";
 
-// Точка входа. Компилируется дважды: в server-бандле остаются plugin.handle(...),
-// в client-бандле они вырезаются вместе с импортами `*.server` — поэтому серверный
-// код (fetch к kanban, WS) в клиентский бандл не попадает.
+// Серверная точка входа (Paseo >= 0.8): RPC-обработчики поверх REST/WS mcp-kanban.
 
 function reply(version: number, result: { snapshot: Omit<Snapshot, "version"> | null }) {
   const board = result.snapshot;
@@ -45,7 +42,7 @@ function reply(version: number, result: { snapshot: Omit<Snapshot, "version"> | 
   };
 }
 
-export default function contribute(plugin: PluginContext) {
+export default function contribute(plugin: PluginServerContext) {
   plugin.handle(kanbanSnapshot, ({ projectId }) => {
     ensureLive();
     // Версию снимаем ДО запроса: если событие придёт пока тянем данные,
@@ -161,34 +158,7 @@ export default function contribute(plugin: PluginContext) {
     return { ok: true, error: null };
   });
 
-  plugin.addSurface("main", KanbanBoard);
-  plugin.addSidebarItem({
-    id: "main",
-    title: "Kanban",
-    icon: "SquareKanban",
-    surface: "main",
-  });
-  plugin.addWorkspacePanel({
-    id: "board",
-    title: "Kanban",
-    icon: "SquareKanban",
-    context: "workspace",
-    locations: ["workspace", "explorer"],
-    Component: KanbanBoard,
-  });
-  plugin.addCommandCenterItem({
-    id: "open-kanban-board",
-    title: "Open Kanban board",
-    icon: "SquareKanban",
-    keywords: ["kanban", "board", "tickets", "tasks"],
-    context: "workspace",
-    onSelect({ openPanel }) {
-      openPanel("board");
-    },
-  });
-  // Клиентский бандл этого модуля не видит: `typeof` по необъявленному имени там
-  // просто даст "undefined", а на сервере закроет WS при выгрузке плагина.
   return () => {
-    if (typeof stopLive === "function") stopLive();
+    stopLive();
   };
 }

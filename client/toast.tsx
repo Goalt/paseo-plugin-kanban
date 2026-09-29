@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Pressable, Text } from "react-native";
-import type { Styles } from "./ui.client";
+import type { Styles } from "./ui";
 
 // Тост об ошибке мутации (паттерн из modal-ui): всплывает снизу, гаснет сам,
 // закрывается тапом. Держим как отдельный компонент — доска и модалка

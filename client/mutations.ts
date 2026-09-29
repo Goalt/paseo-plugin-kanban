@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { describe } from "./ui.client";
+import { describe } from "./ui";
 
 // Общий раннер мутаций для доски и модалки: одна мутация за раз (второй быстрый
 // тап по ◀ не уедет на две колонки), ошибка кладётся в state, успех дёргает

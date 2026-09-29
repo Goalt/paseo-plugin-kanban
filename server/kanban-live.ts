@@ -1,4 +1,4 @@
-import { kanbanWsUrl } from "./kanban-api.server";
+import { kanbanWsUrl } from "./kanban-api";
 
 // Версия доски: монотонный счётчик в памяти сервера плагина. Живёт от подписки на
 // ws://…/ws: любое событие kanban → version++. Клиент опрашивает `kanban.version`

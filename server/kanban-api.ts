@@ -10,13 +10,15 @@ import type {
   Subtask,
   TicketCard,
   TicketDetails,
-} from "./contract";
+} from "../shared/contract";
 
 // Серверный слой плагина: HTTP к REST mcp-kanban. Имя файла оканчивается на
 // `.server` — компилятор 0.6.1 вырезает импорт этого модуля из клиентского бандла
 // и ругается, если его попробуют импортировать из *.client.tsx.
 
-const DEFAULT_BASE_URL = "http://mcp-hub:3010";
+// Борда из ~/mcp-kanban-web: `mcp-kanban start` на общем томе с MCP-сервисом kanban
+// стека ~/devops/mcp, доступна демону через сеть devops_default.
+const DEFAULT_BASE_URL = "http://mcp-kanban-web:3010";
 const REQUEST_TIMEOUT_MS = 5000;
 
 // IP не хардкодим: имя контейнера резолвится DNS'ом docker-сети, IP меняется при пересоздании.

@@ -1,4 +1,4 @@
-import { useRpc } from "@getpaseo/plugin";
+import { useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Modal as NativeModal,
@@ -21,11 +21,11 @@ import {
   type Priority,
   type Session,
   type TicketDetails,
-} from "./contract";
-import { useMutationRunner } from "./mutations.client";
-import { PriorityPicker } from "./ticket-form.client";
-import { Toast } from "./toast.client";
-import { describe, PRIORITY_LABEL, priorityStyle, type Colors, type Styles } from "./ui.client";
+} from "../shared/contract";
+import { useMutationRunner } from "./mutations";
+import { PriorityPicker } from "./ticket-form";
+import { Toast } from "./toast";
+import { describe, PRIORITY_LABEL, priorityStyle, type Colors, type Styles } from "./ui";
 
 // Ограничения клиентского бандла 0.6.1: только промис-цепочки, никакого
 // асинхронного сахара (Hermes на iOS/Android такой бандл молча не грузит).

@@ -1,4 +1,4 @@
-import { defineRpc } from "@getpaseo/plugin/server";
+import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 // Общие для сервера и клиента схемы. Файл попадает в оба бандла, поэтому здесь

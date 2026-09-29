@@ -1,10 +1,10 @@
-import { useRpc } from "@getpaseo/plugin";
+import { useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useState } from "react";
 import { Modal as NativeModal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { kanbanCreateTicket, type Column, type Priority } from "./contract";
-import { useMutationRunner } from "./mutations.client";
-import { Toast } from "./toast.client";
-import { PRIORITIES, PRIORITY_LABEL, priorityStyle, type Colors, type Styles } from "./ui.client";
+import { kanbanCreateTicket, type Column, type Priority } from "../shared/contract";
+import { useMutationRunner } from "./mutations";
+import { Toast } from "./toast";
+import { PRIORITIES, PRIORITY_LABEL, priorityStyle, type Colors, type Styles } from "./ui";
 
 // Формы создания тикета и выбора приоритета. Клиентские ограничения 0.6.1 в силе:
 // только промис-цепочки, только react / react-native / @getpaseo/plugin.
